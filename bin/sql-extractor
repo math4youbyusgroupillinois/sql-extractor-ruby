@@ -1,0 +1,57 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+require 'sequel'
+require 'soda/client'
+require 'faye/websocket'
+require 'eventmachine'
+require 'json'
+
+# Options
+opts = Trollop::options do
+  opt :database,      "Database connection string",   :type => :string, :required => true
+  opt :sql,           "SQL query to execute",         :type => :string, :required => true
+  opt :socket,        "WebSocket to stream to",       :type => :string, :required => true
+end
+
+EM.run {
+  ws = Faye::WebSocket::Client.new(opts[:socket])
+
+  ws.on :open do |event|
+    puts "Connected!"
+
+    # Hello!
+    ws.send({
+      :ws_op => "open",
+      :ws_stream_id => "record_stream_in"
+    }.to_json)
+
+    # Stream our data records
+    Sequel.connect(opts[:database]) do |db|
+      puts "Sending data!"
+      db.fetch(opts[:sql]) do |row|
+        ws.send({
+          :ws_op => "send",
+          :ws_msg => row
+        }.to_json)
+      end
+    end
+
+    # Bye Bye!
+    ws.send({
+      :ws_op => "close",
+      :ws_stream_id => "record_stream_in"
+    }.to_json)
+  end
+
+  ws.on :message do |event|
+    p [:message, event.data]
+  end
+
+  ws.on :close do |event|
+    p [:close, event.code, event.reason]
+    ws = nil
+    exit
+  end
+}
+
